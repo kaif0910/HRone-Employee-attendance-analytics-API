@@ -15,7 +15,7 @@ from typing import Optional
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
-from pymongo import MongoClient
+from pymongo import MongoClient, ASCENDING, DESCENDING
 from pymongo.errors import DuplicateKeyError
 
 load_dotenv()
@@ -191,14 +191,13 @@ def list_attendance(
         if date_from and date_to and date_from > date_to:
             raise HTTPException(422, "date_from cannot be greater than date_to")
     if status:
+        if status not in ("PRESENT", "WFH", "ON_DUTY", "ABSENT", "LEAVE"):
+            raise HTTPException(422, "invalid status")
         q["status"] = status
-    docs = list(db.attendance_logs.find(q))
-    docs.sort(key=lambda d: d["date"], reverse=True)
-    total = len(docs)
-    page_docs = docs[(page - 1) * page_size : page * page_size]
-    for d in page_docs:
-        d["id"] = str(d.pop("_id"))
-    return {"items": page_docs, "total": total, "page": page, "page_size": page_size}
+    total = db.attendance_logs.count_documents(q)
+    docs = list(db.attendance_logs.find(q, {"_id": 0}).sort([("date", DESCENDING), ("emp_code", ASCENDING)]).skip((page - 1) * page_size).limit(page_size))
+    return {"items": [api_record(d) for d in docs], "total": total, "page": page, "page_size": page_size}
+
 
 
 # --------------------------------------------------------------------------- #
