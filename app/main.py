@@ -18,6 +18,10 @@ from fastapi import FastAPI, HTTPException, Query
 from pydantic import BaseModel, Field
 from pymongo import MongoClient, ASCENDING, DESCENDING
 from pymongo.errors import DuplicateKeyError
+from bson.json_util import dumps, loads
+from fastapi.responses import Response
+import json
+
 
 load_dotenv()
 
@@ -526,8 +530,14 @@ def explain_endpoint(
         if emp_code: q["emp_code"] = emp_code
         if date_from or date_to:
             q["date"] = {}
-            if date_from: q["date"]["$gte"] = validate_date_string(date_from)
-            if date_to: q["date"]["$lte"] = validate_date_string(date_to)
+            # if date_from: q["date"]["$gte"] = validate_date_string(date_from)
+            # if date_to: q["date"]["$lte"] = validate_date_string(date_to)
+            if date_from:
+                validate_date_string(date_from)
+                q["date"]["$gte"] = date_from
+            if date_to:
+                validate_date_string(date_to)
+                q["date"]["$lte"] = date_to
             if date_from and date_to and date_from > date_to: raise HTTPException(422, "date_from must not be after date_to")
         if status: q["status"] = status
         explain = db.command("explain", {"find": "attendance_logs", "filter": q, "sort": {"date": -1, "emp_code": 1}, "skip": (page-1)*page_size, "limit": page_size}, verbosity="executionStats")
@@ -558,5 +568,12 @@ def explain_endpoint(
         explain = db.command("explain", {"find": "attendance_logs", "filter": q}, verbosity="executionStats")
         collection = "attendance_logs"
     else: raise HTTPException(422, "unknown endpoint")
-    return {"endpoint": endpoint, "collection": collection, "explain": explain}
+    return Response(
+        content=dumps({
+            "endpoint": endpoint,
+            "collection": collection,
+            "explain": explain
+        }),
+        media_type="application/json"
+    )
 
