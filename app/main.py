@@ -9,11 +9,12 @@ works, but nobody has reviewed it. Read PROBLEM_STATEMENT.docx for what is expec
 openapi.yaml for the contract and DATA_MODEL.md for what is stored in MongoDB.
 """
 import os
-from datetime import datetime, timedelta, timezone
-from typing import Optional
-
+from datetime import datetime, timedelta, timezone, date as date_type
+from calendar import monthrange
+from typing import Optional, Literal
+from decimal import Decimal, ROUND_HALF_UP
 from dotenv import load_dotenv
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Query
 from pydantic import BaseModel, Field
 from pymongo import MongoClient, ASCENDING, DESCENDING
 from pymongo.errors import DuplicateKeyError
@@ -327,3 +328,57 @@ def update_attendance(emp_code: str, date: str, body: RegularizeAttendanceIn):
     doc.update(update_fields)
     doc.setdefault("history", []).append(history_entry)
     return api_record(doc)
+
+def month_bounds(month: str):
+    try:
+        first = date_type.fromisoformat(month + "-01")
+    except (ValueError, TypeError):
+        raise HTTPException(422, "month must be YYYY-MM")
+    if len(month) != 7 or month[4] != "-":
+        raise HTTPException(422, "month must be YYYY-MM")
+    last = date_type(first.year, first.month, monthrange(first.year, first.month)[1])
+    return first.isoformat(), last.isoformat()
+
+def month_logs(month: str, extra_filter=None):
+    first, last = month_bounds(month)
+    q = {"date": {"$gte": first, "$lte": last}}
+    if extra_filter:
+        q.update(extra_filter)
+    return list(db.attendance_logs.find(q, {"_id": 0}))
+
+def workday_count(start: date_type, end: date_type) -> int:
+    if end < start:
+        return 0
+    return sum(1 for offset in range((end - start).days + 1) if (start + timedelta(days=offset)).weekday() < 5)
+
+def round_num(value, places=2):
+    if value is None:
+        return None
+    return float(Decimal(str(value)).quantize(Decimal("1." + "0" * places), rounding=ROUND_HALF_UP))
+
+def present_fraction(doc):
+    if doc.get("status") not in ("PRESENT", "WFH", "ON_DUTY"):
+        return 0.0
+    return 0.5 if doc.get("half_day", False) el
+
+
+
+
+
+@app.get("/analytics/employees/{emp_code}/monthly")
+def employee_monthly(emp_code: str, month: str = Query(..., pattern=r"^\d{4}-(0[1-9]|1[0-2])$")):
+    emp = db.employees.find_one({"emp_code": emp_code}, {"_id": 0})
+    if not emp:
+        raise HTTPException(404, "employee not found")
+    first_s, last_s = month_bounds(month)
+    first, last = date_type.fromisoformat(first_s), date_type.fromisoformat(last_s)
+    start = max(first, date_type.fromisoformat(emp["joined_on"]))
+    working_days = workday_count(start, last) if start <= last else 0
+    logs = month_logs(month, {"emp_code": emp_code})
+    present_days = sum(present_fraction(d) for d in logs if date_type.fromisoformat(d["date"]).weekday() < 5)
+    late = [d for d in logs if d.get("late_minutes", 0) > 0]
+    pct = round_num(present_days / working_days * 100, 2) if working_days else None
+    return {"emp_code": emp_code, "month": month, "working_days": working_days, "present_days": round_num(present_days),
+            "leave_days": sum(d.get("status") == "LEAVE" for d in logs), "late_count": len(late),
+            "total_late_minutes": sum(d.get("late_minutes", 0) for d in logs),
+            "total_overtime_minutes": sum(d.get("overtime_minutes", 0) for d in logs), "attendance_pct": pct}
