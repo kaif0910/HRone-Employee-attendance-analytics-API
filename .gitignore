@@ -1,12 +1,17 @@
-_pycache_
+__pycache__/
 .env
-venv
+.venv/
 venv/
-_pycache_/
+__pycache__/
 sample_data/
 sample_data
 sample_seed.py
 PROBLEM_STATEMENT.docx
 openapi.yaml
 DATA_MODEL.md
-
+@"
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+"@ | Add-Content .gitignore
