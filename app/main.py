@@ -219,28 +219,39 @@ class PunchOutIn(BaseModel):
 
 
 
-@app.post("/attendance/punch-out", status_code=201)
+@app.post("/attendance/punch-out", status_code=200)
 def punch_out(body: PunchOutIn):
     emp = db.employees.find_one({"emp_code": body.emp_code})
-    ts = datetime.fromtimestamp(body.punched_at / 1000) if body.punched_at else datetime.now()
-    d = ts.date().isoformat()
-    doc = db.attendance_logs.find_one({"emp_code": body.emp_code, "date": d})
+    if not emp:
+        raise HTTPException(404, "employee not found")
+    ts = datetime.fromtimestamp(body.punched_at / 1000, timezone.utc).replace(microsecond=0, tzinfo=None) if body.punched_at else datetime.now(timezone.utc).replace(microsecond=0, tzinfo=None)
+    # Choose the most recent open record punched in no later than this instant;
+    # this supports overnight shifts.
+    doc = db.attendance_logs.find_one(
+        {"emp_code": body.emp_code, "punch_in": {"$ne": None, "$lte": ts}, "punch_out": None},
+        sort=[("punch_in", DESCENDING)],
+    )
     if not doc:
-        raise HTTPException(404, "no punch-in found for this date")
-    if doc["punch_out"]:
-        raise HTTPException(409, "already punched out for this date")
+        prior = db.attendance_logs.find_one({"emp_code": body.emp_code, "punch_in": {"$ne": None, "$lte": ts}}, sort=[("punch_in", DESCENDING)])
+        if prior and prior.get("punch_out") is not None:
+            raise HTTPException(409, "already punched out for this date")
+        raise HTTPException(404, "no punch-in found")
+    elapsed = (ts - doc["punch_in"]).total_seconds()
+    if elapsed <= 0 or elapsed > 24 * 3600:
+        raise HTTPException(422, "punch-out must be after punch-in and within 24 hours")
+    hours = compute_work_hours(doc["punch_in"], ts)
     update_data = {
         "punch_out": ts,
-        "work_hours": compute_work_hours(doc["punch_in"], ts),
-        "late_minutes": doc["late_minutes"],
-        "overtime_minutes": compute_overtime(ts, emp["shift_end"], datetime.fromisoformat(doc["date"]).isoformat()),
+        "work_hours": hours,
+        "overtime_minutes": compute_overtime(ts, emp["shift_end"], doc["date"], emp["shift_start"]),
+        "half_day": hours < 4.50,
+        "late_minutes": doc.get("late_minutes", 0),
     }
-    res = db.attendance_logs.update_one({"_id": doc["_id"]}, {"$set": update_data})
-    if not res.modified_count:
-        raise HTTPException(500, "failed to update attendance log")
+    result = db.attendance_logs.update_one({"_id": doc["_id"], "punch_out": None}, {"$set": update_data})
+    if not result.modified_count:
+        raise HTTPException(409, "already punched out for this date")
     doc.update(update_data)
-    doc["id"] = str(doc.pop("_id"))
-    return doc
+    return api_record(doc)
 
 
 class RegularizeAttendanceIn(BaseModel):
