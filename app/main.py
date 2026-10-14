@@ -448,7 +448,7 @@ def department_summary(month: str = Query(..., pattern=r"^\d{4}-(0[1-9]|1[0-2])$
 def late_leaderboard(month: str = Query(..., pattern=r"^\d{4}-(0[1-9]|1[0-2])$"), limit: int = Query(10, ge=1, le=50), department: Optional[str] = None):
     logs = month_logs(month)
     employees = list(db.employees.find({}, {"_id": 0, "emp_code": 1, "name": 1, "department": 1}))
-    emp = {e["emp_code"]: e for e in employees}
+    emap = {e["emp_code"]: e for e in employees}
     totals = {}
     for d in logs:
         emp = emap.get(d.get("emp_code"))
