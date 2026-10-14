@@ -382,3 +382,37 @@ def employee_monthly(emp_code: str, month: str = Query(..., pattern=r"^\d{4}-(0[
             "leave_days": sum(d.get("status") == "LEAVE" for d in logs), "late_count": len(late),
             "total_late_minutes": sum(d.get("late_minutes", 0) for d in logs),
             "total_overtime_minutes": sum(d.get("overtime_minutes", 0) for d in logs), "attendance_pct": pct}
+
+
+@app.get("/analytics/departments/summary")
+def department_summary(month: str = Query(..., pattern=r"^\d{4}-(0[1-9]|1[0-2])$"), department: Optional[str] = None):
+    _, last_s = month_bounds(month)
+    employees_q = {"joined_on": {"$lte": last_s}}
+    if department is not None:
+        employees_q["department"] = department
+    employees = list(db.employees.find(employees_q, {"_id": 0}))
+    by_dept = {}
+    for emp in employees:
+        by_dept.setdefault(emp["department"], []).append(emp)
+    logs = month_logs(month)
+    emp_dept = {e["emp_code"]: e["department"] for e in employees}
+    grouped = {}
+    for d in logs:
+        dep = emp_dept.get(d.get("emp_code"))
+        if dep is not None:
+            grouped.setdefault(dep, []).append(d)
+    items = []
+    for dep in sorted(by_dept):
+        rows = grouped.get(dep, [])
+        present_days = sum(present_fraction(d) for d in rows if date_type.fromisoformat(d["date"]).weekday() < 5)
+        late = [d for d in rows if d.get("late_minutes", 0) > 0]
+        hours = [d["work_hours"] for d in rows if d.get("status") in ("PRESENT", "WFH", "ON_DUTY") and d.get("work_hours") is not None]
+        items.append({"department": dep, "headcount": len(by_dept[dep]), "present_days": round_num(present_days),
+                      "avg_work_hours": round_num(sum(hours) / len(hours)) if hours else None,
+                      "late_count": len(late), "total_late_minutes": sum(d.get("late_minutes", 0) for d in late),
+                      "leave_count": sum(d.get("status") == "LEAVE" for d in rows),
+                      "on_duty_count": sum(d.get("status") == "ON_DUTY" for d in rows)})
+    return {"month": month, "items": items}
+
+
+
