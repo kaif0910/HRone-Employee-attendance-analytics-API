@@ -16,6 +16,7 @@ from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
 from pymongo import MongoClient
+from pymongo.errors import DuplicateKeyError
 
 load_dotenv()
 
@@ -162,10 +163,11 @@ def punch_in(body: PunchInIn):
         "half_day": False,
         "history": [],
     }
-    res = db.attendance_logs.insert_one(doc)
-    doc["id"] = str(res.inserted_id)
-    doc.pop("_id", None)
-    return doc
+    try:
+        db.attendance_logs.insert_one(doc)
+    except DuplicateKeyError:
+        raise HTTPException(409, "already punched in for this date")
+    return api_record(doc)
 
 
 @app.get("/attendance")
