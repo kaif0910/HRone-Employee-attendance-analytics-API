@@ -1,0 +1,12 @@
+_pycache_
+.env
+venv
+venv/
+_pycache_/
+sample_data/
+sample_data
+sample_seed.py
+PROBLEM_STATEMENT.docx
+openapi.yaml
+DATA_MODEL.md
+
