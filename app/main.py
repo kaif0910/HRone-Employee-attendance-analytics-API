@@ -188,6 +188,8 @@ def list_attendance(
             q["date"]["$gte"] = date_from
         if date_to:
             q["date"]["$lte"] = date_to
+        if date_from and date_to and date_from > date_to:
+            raise HTTPException(422, "date_from cannot be greater than date_to")
     if status:
         q["status"] = status
     docs = list(db.attendance_logs.find(q))
