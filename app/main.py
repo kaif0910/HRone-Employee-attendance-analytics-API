@@ -21,6 +21,7 @@ from pymongo.errors import DuplicateKeyError
 from bson.json_util import dumps, loads
 from fastapi.responses import Response
 import json
+from contextlib import asynccontextmanager
 
 
 load_dotenv()
@@ -31,7 +32,36 @@ print(f"Connected to MongoDB: {db.name} at {client.address[0]}:{client.address[1
 
 IST = timezone(timedelta(hours=5, minutes=30))  #add this to UTC time to get IST time. This is used to ensure that the punch-in and punch-out times are stored in IST timezone in the database, regardless of the timezone of the server or client making the request.
 
-app = FastAPI(title="Employee Attendance & Analytics API", version="2.0.0")
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    db.employees.create_index(
+        [("emp_code", ASCENDING)],
+        unique=True,
+        name="employee_code_unique"
+    )
+    db.attendance_logs.create_index(
+        [("emp_code", ASCENDING), ("date", ASCENDING)],
+        unique=True,
+        name="attendance_employee_date_unique"
+    )
+    db.attendance_logs.create_index(
+        [("date", DESCENDING), ("emp_code", ASCENDING)],
+        name="attendance_date_employee"
+    )
+    db.attendance_logs.create_index(
+        [("date", ASCENDING), ("status", ASCENDING)],
+        name="attendance_date_status"
+    )
+
+    yield
+
+
+app = FastAPI(
+    title="Employee Attendance & Analytics API",
+    version="2.0.0",
+    lifespan=lifespan
+)
 
 
 # --------------------------------------------------------------------------- #
