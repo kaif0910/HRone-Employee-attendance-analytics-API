@@ -38,6 +38,33 @@ def attendance_date(ts: datetime, emp: dict) -> str:
     return local.date().isoformat()
 
 
+
+def api_record(doc):
+    out = {k: v for k, v in doc.items() if k != "_id"}
+    for key in ("punch_in", "punch_out"):
+        out[key] = epoch_ms(out.get(key))
+    out.setdefault("work_hours", None)
+    out.setdefault("late_minutes", 0)
+    out.setdefault("overtime_minutes", 0)
+    out.setdefault("half_day", False)
+    out.setdefault("history", [])
+    for entry in out["history"]:
+        entry["at"] = epoch_ms(entry.get("at"))
+        for change in entry.get("changes", {}).values():
+            for side in ("from", "to"):
+                if isinstance(change.get(side), datetime):
+                    change[side] = epoch_ms(change[side])
+    return out
+
+
+def epoch_ms(value):
+    if value is None:
+        return None
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=timezone.utc)
+    return int(value.timestamp() * 1000)
+
+
 def compute_late_minutes(punch_in: datetime, shift_start: str) -> int:
     h, m = map(int, shift_start.split(":"))
     start = punch_in.replace(hour=h, minute=m, second=0, microsecond=0)
