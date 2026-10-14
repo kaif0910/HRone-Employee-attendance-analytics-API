@@ -444,4 +444,36 @@ def late_leaderboard(month: str = Query(..., pattern=r"^\d{4}-(0[1-9]|1[0-2])$")
     return {"month": month, "items": items}
 
 
+@app.get("/analytics/departments/{department}/trend")
+def department_trend(department: str, from_date: Optional[str] = Query(None, alias="from"), to_date: Optional[str] = Query(None, alias="to")):
+    if not from_date or not to_date:
+        raise HTTPException(422, "from and to are required")
+    start, end = validate_date_string(from_date), validate_date_string(to_date)
+    if end < start or (end - start).days + 1 > 92:
+        raise HTTPException(422, "to must be on/after from and range cannot exceed 92 days")
+    employees = list(db.employees.find({"department": department}, {"_id": 0, "emp_code": 1, "joined_on": 1}))
+    if not employees:
+        raise HTTPException(404, "department not found")
+    codes = [e["emp_code"] for e in employees]
+    logs = list(db.attendance_logs.find({"emp_code": {"$in": codes}, "date": {"$gte": from_date, "$lte": to_date}}, {"_id": 0}))
+    by_day = {}
+    for d in logs:
+        by_day.setdefault(d["date"], []).append(d)
+    items, rates = [], []
+    for offset in range((end - start).days + 1):
+        day = start + timedelta(days=offset)
+        day_s = day.isoformat()
+        headcount = sum(e["joined_on"] <= day_s for e in employees)
+        rows = by_day.get(day_s, [])
+        present = sum(present_fraction(d) for d in rows)
+        late_count = sum(d.get("late_minutes", 0) > 0 for d in rows)
+        working = day.weekday() < 5
+        rate = round_num(present / headcount, 4) if working and headcount else None
+        rates.append(rate)
+        window = [x for x in rates[max(0, len(rates)-7):] if x is not None]
+        moving = round_num(sum(window) / len(window), 4) if window else None
+        items.append({"date": day_s, "is_working_day": working, "headcount": headcount,
+                      "present_count": round_num(present), "late_count": late_count,
+                      "attendance_rate": rate, "moving_avg_7d": moving})
+    return {"department": department, "items": items}
 
