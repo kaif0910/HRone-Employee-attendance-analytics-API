@@ -477,3 +477,59 @@ def department_trend(department: str, from_date: Optional[str] = Query(None, ali
                       "attendance_rate": rate, "moving_avg_7d": moving})
     return {"department": department, "items": items}
 
+
+
+@app.get("/admin/explain/{endpoint}")
+def explain_endpoint(
+    endpoint: str,
+    emp_code: Optional[str] = None,
+    month: Optional[str] = None,
+    department: Optional[str] = None,
+    limit: int = Query(10, ge=1, le=50),
+    date_from: Optional[str] = None,
+    date_to: Optional[str] = None,
+    status: Optional[str] = None,
+    from_date: Optional[str] = Query(None, alias="from"),
+    to_date: Optional[str] = Query(None, alias="to"),
+    page: int = Query(1, ge=1),
+    page_size: int = Query(20, ge=1, le=100),
+):
+    if endpoint == "attendance_list":
+        q = {}
+        if emp_code: q["emp_code"] = emp_code
+        if date_from or date_to:
+            q["date"] = {}
+            if date_from: q["date"]["$gte"] = validate_date_string(date_from)
+            if date_to: q["date"]["$lte"] = validate_date_string(date_to)
+            if date_from and date_to and date_from > date_to: raise HTTPException(422, "date_from must not be after date_to")
+        if status: q["status"] = status
+        explain = db.command("explain", {"find": "attendance_logs", "filter": q, "sort": {"date": -1, "emp_code": 1}, "skip": (page-1)*page_size, "limit": page_size}, verbosity="executionStats")
+        collection = "attendance_logs"
+    elif endpoint in ("employee_monthly", "department_summary", "late_leaderboard"):
+        if not month: raise HTTPException(422, "month is required")
+        first, last = month_bounds(month)
+        if endpoint == "employee_monthly":
+            if not emp_code: raise HTTPException(422, "emp_code is required")
+            q = {"emp_code": emp_code, "date": {"$gte": first, "$lte": last}}
+        elif endpoint == "department_summary":
+            q = {"date": {"$gte": first, "$lte": last}}
+            if department:
+                employees = list(db.employees.find({"department": department}, {"emp_code": 1, "_id": 0}))
+                q["emp_code"] = {"$in": [e["emp_code"] for e in employees]}
+        else:
+            q = {"date": {"$gte": first, "$lte": last}, "late_minutes": {"$gt": 0}}
+            if department:
+                employees = list(db.employees.find({"department": department}, {"emp_code": 1, "_id": 0}))
+                q["emp_code"] = {"$in": [e["emp_code"] for e in employees]}
+        explain = db.command("explain", {"find": "attendance_logs", "filter": q}, verbosity="executionStats")
+        collection = "attendance_logs"
+    elif endpoint == "department_trend":
+        if not department or not from_date or not to_date: raise HTTPException(422, "department, from and to are required")
+        validate_date_string(from_date); validate_date_string(to_date)
+        employees = list(db.employees.find({"department": department}, {"emp_code": 1, "_id": 0}))
+        q = {"emp_code": {"$in": [e["emp_code"] for e in employees]}, "date": {"$gte": from_date, "$lte": to_date}}
+        explain = db.command("explain", {"find": "attendance_logs", "filter": q}, verbosity="executionStats")
+        collection = "attendance_logs"
+    else: raise HTTPException(422, "unknown endpoint")
+    return {"endpoint": endpoint, "collection": collection, "explain": explain}
+
