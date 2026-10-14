@@ -261,8 +261,69 @@ class RegularizeAttendanceIn(BaseModel):
     reason: str = Field(min_length=5, max_length=200)
     regularized_by: str = Field(min_length=1, max_length=50)
 
+
+def validate_date_string(value: str):
+    try:
+        parsed = date_type.fromisoformat(value)
+    except (ValueError, TypeError):
+        raise HTTPException(422, "date must be YYYY-MM-DD")
+    if parsed.isoformat() != value:
+        raise HTTPException(422, "date must be YYYY-MM-DD")
+    return parsed
+
 @app.patch("/attendance/{emp_code}/{date}")
 def update_attendance(emp_code: str, date: str, body: RegularizeAttendanceIn):
+    validate_date_string(date)
+    emp = db.employees.find_one({"emp_code": emp_code})
     doc = db.attendance_logs.find_one({"emp_code": emp_code, "date": date})
-    if not doc:
-        raise HTTPException(404, "attendance log not found")    
+    if not emp or not doc:
+        raise HTTPException(404, "employee or attendance log not found")
+    incoming = body.model_dump(exclude_unset=True)
+    if ("punch_in" in incoming and incoming["punch_in"] is None) or ("punch_out" in incoming and incoming["punch_out"] is None):
+        raise HTTPException(422, "punch timestamps must be epoch milliseconds, not null")
+    status = incoming.get("status", doc.get("status"))
+    if status in ("ABSENT", "LEAVE") and ("punch_in" in incoming or "punch_out" in incoming):
+        raise HTTPException(422, "ABSENT/LEAVE cannot be supplied with punch times")
+    old = {k: doc.get(k) for k in ("status", "punch_in", "punch_out", "work_hours", "late_minutes", "overtime_minutes", "half_day")}
+    new_status = status
+    if new_status in ("ABSENT", "LEAVE"):
+        new_in = new_out = None
+        derived = {"work_hours": None, "late_minutes": 0, "overtime_minutes": 0, "half_day": False}
+    else:
+        new_in = datetime.fromtimestamp(incoming["punch_in"] / 1000, timezone.utc).replace(microsecond=0, tzinfo=None) if "punch_in" in incoming else doc.get("punch_in")
+        new_out = datetime.fromtimestamp(incoming["punch_out"] / 1000, timezone.utc).replace(microsecond=0, tzinfo=None) if "punch_out" in incoming else doc.get("punch_out")
+        if new_in is None:
+            raise HTTPException(422, "presence status requires punch_in")
+        if attendance_date(new_in, emp) != date:
+            raise HTTPException(422, "punch_in must belong to the attendance date")
+        if new_out is not None:
+            elapsed = (new_out - new_in).total_seconds()
+            if elapsed <= 0 or elapsed > 24 * 3600:
+                raise HTTPException(422, "punch_out must be after punch_in and within 24 hours")
+            hours = compute_work_hours(new_in, new_out)
+            derived = {"work_hours": hours, "late_minutes": compute_late_minutes(new_in, emp["shift_start"]),
+                       "overtime_minutes": compute_overtime(new_out, emp["shift_end"], date, emp["shift_start"]), "half_day": hours < 4.50}
+        else:
+            derived = {"work_hours": None, "late_minutes": compute_late_minutes(new_in, emp["shift_start"]), "overtime_minutes": 0, "half_day": False}
+    proposed = {"status": new_status, "punch_in": new_in, "punch_out": new_out, **derived}
+    changes = {}
+    for key, value in proposed.items():
+        previous = old.get(key)
+        if previous != value:
+            changes[key] = {"from": previous, "to": value}
+    if not changes:
+        raise HTTPException(422, "regularization does not change the record")
+    now = datetime.now(timezone.utc).replace(microsecond=0, tzinfo=None)
+    history_entry = {"at": now, "by": incoming["regularized_by"], "reason": incoming["reason"], "changes": changes}
+    update_fields = dict(proposed)
+    # Compare-and-set on history length to avoid silently losing concurrent audit entries.
+    history = doc.get("history", [])
+    result = db.attendance_logs.update_one(
+        {"_id": doc["_id"], "history": {"$size": len(history)}},
+        {"$set": update_fields, "$push": {"history": history_entry}},
+    )
+    if not result.modified_count:
+        raise HTTPException(409, "attendance record changed concurrently; retry")
+    doc.update(update_fields)
+    doc.setdefault("history", []).append(history_entry)
+    return api_record(doc)
