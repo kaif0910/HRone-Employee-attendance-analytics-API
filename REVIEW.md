@@ -7,3 +7,6 @@ List every defect you found in the starter `app/main.py` (helpers and endpoints)
 | 1 | | | | |
 
 Also note anything you looked at and decided was **not** a defect, and why.
+
+
+fix: **line number 101** - paging logic was not working correctly. The `skip` and `limit` values were not being calculated correctly based on the `page` and `page_size` parameters. This would result in incorrect data being returned for paginated requests. i found it while testing through postman and seeing that the data returned was not matching the expected page and page size. I fixed it by updating the calculation of `skip` and `limit` to correctly reflect the requested page and page size since it was skipping the first page and returning the second page instead.

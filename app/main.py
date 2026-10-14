@@ -22,7 +22,7 @@ load_dotenv()
 client = MongoClient(os.getenv("MONGO_URI", "mongodb://localhost:27017"))
 db = client[os.getenv("MONGO_DB", "attendance_db")]
 
-IST = timezone(timedelta(hours=5, minutes=30))
+IST = timezone(timedelta(hours=5, minutes=30))  #add this to UTC time to get IST time. This is used to ensure that the punch-in and punch-out times are stored in IST timezone in the database, regardless of the timezone of the server or client making the request.
 
 app = FastAPI(title="Employee Attendance & Analytics API", version="2.0.0")
 
@@ -30,6 +30,14 @@ app = FastAPI(title="Employee Attendance & Analytics API", version="2.0.0")
 # --------------------------------------------------------------------------- #
 # Helpers
 # --------------------------------------------------------------------------- #
+
+def attendance_date(ts: datetime, emp: dict) -> str:
+    local = ts.replace(tzinfo=timezone.utc).astimezone(IST) if ts.tzinfo is None else ts.astimezone(IST)
+    if emp["shift_end"] <= emp["shift_start"] and local.strftime("%H:%M") < emp["shift_end"]:
+        local -= timedelta(days=1)
+    return local.date().isoformat()
+
+
 def compute_late_minutes(punch_in: datetime, shift_start: str) -> int:
     h, m = map(int, shift_start.split(":"))
     start = punch_in.replace(hour=h, minute=m, second=0, microsecond=0)
@@ -107,8 +115,12 @@ def list_employees(department: Optional[str] = None, page: int = 1, page_size: i
 @app.post("/attendance/punch-in", status_code=201)
 def punch_in(body: PunchInIn):
     emp = db.employees.find_one({"emp_code": body.emp_code})
-    ts = datetime.fromtimestamp(body.punched_at / 1000) if body.punched_at else datetime.now()
-    d = ts.date().isoformat()
+    if not emp:
+        raise HTTPException(404, "employee not found")
+    if body.status not in ("PRESENT", "WFH", "ON_DUTY"):
+        raise HTTPException(400, "invalid punch-in status")
+    ts = datetime.fromtimestamp(body.punched_at / 1000, timezone.utc).replace(microsecond=0, tzinfo=None) if body.punched_at else datetime.now(timezone.utc).replace(microsecond=0, tzinfo=None)
+    d = attendance_date(ts, emp)
     if db.attendance_logs.find_one({"emp_code": body.emp_code, "date": d}):
         raise HTTPException(409, "already punched in for this date")
     doc = {
