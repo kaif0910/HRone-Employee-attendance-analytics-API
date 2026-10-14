@@ -359,7 +359,7 @@ def round_num(value, places=2):
 def present_fraction(doc):
     if doc.get("status") not in ("PRESENT", "WFH", "ON_DUTY"):
         return 0.0
-    return 0.5 if doc.get("half_day", False) el
+    return 0.5 if doc.get("half_day", False) else 1.0
 
 
 
@@ -412,6 +412,35 @@ def department_summary(month: str = Query(..., pattern=r"^\d{4}-(0[1-9]|1[0-2])$
                       "late_count": len(late), "total_late_minutes": sum(d.get("late_minutes", 0) for d in late),
                       "leave_count": sum(d.get("status") == "LEAVE" for d in rows),
                       "on_duty_count": sum(d.get("status") == "ON_DUTY" for d in rows)})
+    return {"month": month, "items": items}
+
+
+
+
+@app.get("/analytics/leaderboard/late")
+def late_leaderboard(month: str = Query(..., pattern=r"^\d{4}-(0[1-9]|1[0-2])$"), limit: int = Query(10, ge=1, le=50), department: Optional[str] = None):
+    logs = month_logs(month)
+    employees = list(db.employees.find({}, {"_id": 0, "emp_code": 1, "name": 1, "department": 1}))
+    emmp = {e["emp_code"]: e for e in employees}
+    totals = {}
+    for d in logs:
+        emp = emap.get(d.get("emp_code"))
+        if not emp or (department is not None and emp.get("department") != department):
+            continue
+        mins = d.get("late_minutes", 0)
+        if mins > 0:
+            row = totals.setdefault(emp["emp_code"], {**emp, "total_late_minutes": 0, "late_count": 0})
+            row["total_late_minutes"] += mins
+            row["late_count"] += 1
+    ranked = sorted(totals.values(), key=lambda r: (-r["total_late_minutes"], r["emp_code"]))
+    items, previous, rank = [], None, 0
+    for idx, row in enumerate(ranked, 1):
+        if row["total_late_minutes"] != previous:
+            rank = idx
+            previous = row["total_late_minutes"]
+        if rank > limit:
+            break
+        items.append({"rank": rank, **row})
     return {"month": month, "items": items}
 
 
